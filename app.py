@@ -7,7 +7,6 @@ import pytz
 # Try to load .env file for local development
 try:
     from dotenv import load_dotenv
-
     load_dotenv()
     print("✅ Loaded .env file")
 except ImportError:
@@ -34,8 +33,7 @@ print(f"🕐 Cambodia Time (UTC+7): {cambodia_now().strftime('%Y-%m-%d %H:%M:%S'
 print(f"📅 Cambodia Date: {cambodia_today().strftime('%Y-%m-%d')}")
 
 # ==================== IMPORTS ====================
-from flask import Flask, render_template, request, redirect, url_for, session, flash, send_from_directory, jsonify, \
-    make_response, Response
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_from_directory, jsonify, make_response, Response
 from flask_sqlalchemy import SQLAlchemy
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -43,6 +41,7 @@ import secrets
 from PIL import Image
 import json
 from sqlalchemy import inspect, text, not_, and_
+from sqlalchemy.pool import NullPool
 import csv
 from io import StringIO
 import threading
@@ -51,7 +50,6 @@ import queue
 # ==================== VERCEL READ-ONLY FIX ====================
 if os.environ.get('VERCEL'):
     import tempfile
-
     temp_dir = tempfile.gettempdir()
     app = Flask(__name__, instance_path=os.path.join(temp_dir, 'instance'))
 else:
@@ -68,8 +66,14 @@ def get_database_uri():
     if 'sslmode' not in database_url:
         database_url += ('&' if '?' in database_url else '?') + 'sslmode=require'
 
+    # For Vercel/Supabase, we need to be careful with connections
+    if os.environ.get('VERCEL'):
+        # Use NullPool to prevent connection pooling issues
+        return database_url
+
     try:
         from sqlalchemy import create_engine
+        # Quick test connection
         engine = create_engine(
             database_url,
             connect_args={'connect_timeout': 5},
@@ -89,9 +93,30 @@ def get_database_uri():
 
 # ==================== CONFIGURATION ====================
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(16))
-app.config['SQLALCHEMY_DATABASE_URI'] = get_database_uri()
+
+# Get database URI
+database_uri = get_database_uri()
+app.config['SQLALCHEMY_DATABASE_URI'] = database_uri
 print(f"🔗 Final Database URI: {app.config['SQLALCHEMY_DATABASE_URI']}")
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# For Vercel/Supabase, use NullPool to prevent connection issues
+if os.environ.get('VERCEL'):
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_size': 1,
+        'max_overflow': 0,
+        'pool_pre_ping': True,
+        'pool_recycle': 300,
+        'poolclass': NullPool  # This prevents connection pooling issues
+    }
+else:
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_size': 5,
+        'max_overflow': 5,
+        'pool_pre_ping': True,
+        'pool_recycle': 300
+    }
 
 if os.environ.get('VERCEL'):
     app.config['UPLOAD_FOLDER'] = '/tmp/uploads/profiles'
@@ -277,7 +302,6 @@ def login_required(f):
             flash('Please login first.', 'warning')
             return redirect(url_for('login'))
         return f(*args, **kwargs)
-
     return decorated_function
 
 
@@ -291,7 +315,6 @@ def admin_required(f):
             flash('Admin access required.', 'danger')
             return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
-
     return decorated_function
 
 
@@ -359,7 +382,6 @@ def stream():
                 yield f"data: {data}\n\n"
         except GeneratorExit:
             del sse_clients[client_id]
-
     return Response(event_stream(), mimetype="text/event-stream")
 
 
@@ -2526,6 +2548,16 @@ def start_background_cleanup():
     thread = threading.Thread(target=run_cleanup, daemon=True)
     thread.start()
     print("✅ Background cleanup thread started")
+
+
+# ==================== TEARDOWN ====================
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    """Close database session at the end of each request"""
+    try:
+        db.session.remove()
+    except:
+        pass
 
 
 # ==================== ERROR HANDLERS ====================
