@@ -102,13 +102,12 @@ print(f"🔗 Final Database URI: {app.config['SQLALCHEMY_DATABASE_URI']}")
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # For Vercel/Supabase, use NullPool to prevent connection issues
+# IMPORTANT: NullPool does NOT accept pool_size or max_overflow parameters
 if os.environ.get('VERCEL'):
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_size': 1,
-        'max_overflow': 0,
         'pool_pre_ping': True,
         'pool_recycle': 300,
-        'poolclass': NullPool  # This prevents connection pooling issues
+        'poolclass': NullPool
     }
 else:
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
